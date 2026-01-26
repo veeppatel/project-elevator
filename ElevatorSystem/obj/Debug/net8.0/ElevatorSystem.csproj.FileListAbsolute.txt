@@ -1,0 +1,14 @@
+C:\Users\Veep Patel\Downloads\Elevator\elevator\ElevatorSystem\bin\Debug\net8.0\ElevatorSystem.exe
+C:\Users\Veep Patel\Downloads\Elevator\elevator\ElevatorSystem\bin\Debug\net8.0\ElevatorSystem.deps.json
+C:\Users\Veep Patel\Downloads\Elevator\elevator\ElevatorSystem\bin\Debug\net8.0\ElevatorSystem.runtimeconfig.json
+C:\Users\Veep Patel\Downloads\Elevator\elevator\ElevatorSystem\bin\Debug\net8.0\ElevatorSystem.dll
+C:\Users\Veep Patel\Downloads\Elevator\elevator\ElevatorSystem\bin\Debug\net8.0\ElevatorSystem.pdb
+C:\Users\Veep Patel\Downloads\Elevator\elevator\ElevatorSystem\obj\Debug\net8.0\ElevatorSystem.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Veep Patel\Downloads\Elevator\elevator\ElevatorSystem\obj\Debug\net8.0\ElevatorSystem.AssemblyInfoInputs.cache
+C:\Users\Veep Patel\Downloads\Elevator\elevator\ElevatorSystem\obj\Debug\net8.0\ElevatorSystem.AssemblyInfo.cs
+C:\Users\Veep Patel\Downloads\Elevator\elevator\ElevatorSystem\obj\Debug\net8.0\ElevatorSystem.csproj.CoreCompileInputs.cache
+C:\Users\Veep Patel\Downloads\Elevator\elevator\ElevatorSystem\obj\Debug\net8.0\ElevatorSystem.dll
+C:\Users\Veep Patel\Downloads\Elevator\elevator\ElevatorSystem\obj\Debug\net8.0\refint\ElevatorSystem.dll
+C:\Users\Veep Patel\Downloads\Elevator\elevator\ElevatorSystem\obj\Debug\net8.0\ElevatorSystem.pdb
+C:\Users\Veep Patel\Downloads\Elevator\elevator\ElevatorSystem\obj\Debug\net8.0\ElevatorSystem.genruntimeconfig.cache
+C:\Users\Veep Patel\Downloads\Elevator\elevator\ElevatorSystem\obj\Debug\net8.0\ref\ElevatorSystem.dll

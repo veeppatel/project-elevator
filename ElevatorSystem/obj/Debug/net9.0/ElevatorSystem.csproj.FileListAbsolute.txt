@@ -1,0 +1,14 @@
+D:\Learning\Elevator\ElevatorSystem\bin\Debug\net9.0\ElevatorSystem.exe
+D:\Learning\Elevator\ElevatorSystem\bin\Debug\net9.0\ElevatorSystem.deps.json
+D:\Learning\Elevator\ElevatorSystem\bin\Debug\net9.0\ElevatorSystem.runtimeconfig.json
+D:\Learning\Elevator\ElevatorSystem\bin\Debug\net9.0\ElevatorSystem.dll
+D:\Learning\Elevator\ElevatorSystem\bin\Debug\net9.0\ElevatorSystem.pdb
+D:\Learning\Elevator\ElevatorSystem\obj\Debug\net9.0\ElevatorSystem.GeneratedMSBuildEditorConfig.editorconfig
+D:\Learning\Elevator\ElevatorSystem\obj\Debug\net9.0\ElevatorSystem.AssemblyInfoInputs.cache
+D:\Learning\Elevator\ElevatorSystem\obj\Debug\net9.0\ElevatorSystem.AssemblyInfo.cs
+D:\Learning\Elevator\ElevatorSystem\obj\Debug\net9.0\ElevatorSystem.csproj.CoreCompileInputs.cache
+D:\Learning\Elevator\ElevatorSystem\obj\Debug\net9.0\ElevatorSystem.dll
+D:\Learning\Elevator\ElevatorSystem\obj\Debug\net9.0\refint\ElevatorSystem.dll
+D:\Learning\Elevator\ElevatorSystem\obj\Debug\net9.0\ElevatorSystem.pdb
+D:\Learning\Elevator\ElevatorSystem\obj\Debug\net9.0\ElevatorSystem.genruntimeconfig.cache
+D:\Learning\Elevator\ElevatorSystem\obj\Debug\net9.0\ref\ElevatorSystem.dll
