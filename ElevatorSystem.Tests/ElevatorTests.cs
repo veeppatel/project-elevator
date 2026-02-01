@@ -1,235 +1,211 @@
+using ElevatorSystem.Core.Events;
+using ElevatorSystem.Core.Interfaces;
+using ElevatorSystem.Core.States;
 using ElevatorSystem.Models;
-using ElevatorSystem.Services;
 
 namespace ElevatorSystem.Tests;
 
 /// <summary>
-/// Unit tests for the Elevator class.
+/// Unit tests for the Elevator class with State Pattern.
 /// </summary>
 public class ElevatorTests
 {
+    private readonly IEventBus _eventBus = new EventBus();
+
     [Fact]
-    public void NewElevator_StartsAtFloor1_WithIdleState()
+    public void NewElevator_StartsAtFloor1_InIdleState()
     {
         // Arrange & Act
-        var elevator = new Elevator(1);
+        var elevator = new Elevator(1, _eventBus);
 
         // Assert
         Assert.Equal(1, elevator.Id);
         Assert.Equal(1, elevator.CurrentFloor);
-        Assert.Equal(Direction.Idle, elevator.Direction);
-        Assert.Equal(ElevatorState.Stopped, elevator.State);
-        Assert.False(elevator.HasDestinations);
+        Assert.Equal(ElevatorDirection.Idle, elevator.Direction);
+        Assert.Equal(ElevatorStateType.Idle, elevator.StateType);
+        Assert.False(elevator.HasPendingRequests);
     }
 
     [Fact]
-    public void AddDestination_AboveCurrentFloor_SetsUpDirection()
+    public void AssignHallCall_AddsToAssignedCalls()
     {
         // Arrange
-        var elevator = new Elevator(1);
+        var elevator = new Elevator(1, _eventBus);
+        var call = new HallCall(5, ElevatorDirection.Up);
 
         // Act
-        elevator.AddDestination(5, Direction.Up);
+        elevator.AssignHallCall(call);
 
         // Assert
-        Assert.Equal(Direction.Up, elevator.Direction);
-        Assert.True(elevator.HasDestinations);
-        Assert.Contains(5, elevator.Destinations);
+        Assert.True(elevator.HasPendingRequests);
+        Assert.Single(elevator.AssignedHallCalls);
+        Assert.Equal(5, elevator.AssignedHallCalls[0].Floor);
     }
 
     [Fact]
-    public void AddDestination_BelowCurrentFloor_SetsDownDirection()
+    public void AddCabCall_AddsToDestinations()
     {
         // Arrange
-        var elevator = new Elevator(1);
-        elevator.AddDestination(5, Direction.Up);
-        elevator.Move();
-        elevator.CompleteMove(); // Now at floor 2
+        var elevator = new Elevator(1, _eventBus);
 
         // Act
-        elevator.AddDestination(1, Direction.Down);
+        elevator.AddCabCall(5);
 
         // Assert
-        Assert.Contains(1, elevator.Destinations);
+        Assert.True(elevator.HasPendingRequests);
+        Assert.Contains(5, elevator.CabCallFloors);
     }
 
     [Fact]
-    public void Move_MovesOneFloorInDirection()
+    public void AddCabCall_InvalidFloor_IsIgnored()
     {
         // Arrange
-        var elevator = new Elevator(1);
-        elevator.AddDestination(5, Direction.Up);
+        var elevator = new Elevator(1, _eventBus);
 
         // Act
-        bool moved = elevator.Move();
+        elevator.AddCabCall(0);
+        elevator.AddCabCall(11);
 
         // Assert
-        Assert.True(moved);
-        Assert.Equal(2, elevator.CurrentFloor);
-        Assert.Equal(ElevatorState.Moving, elevator.State);
+        Assert.False(elevator.HasPendingRequests);
     }
 
     [Fact]
-    public void Move_DoesNotMoveWhenIdle()
+    public void GetStopsInDirection_ReturnsCorrectFloors()
     {
         // Arrange
-        var elevator = new Elevator(1);
+        var elevator = new Elevator(1, _eventBus);
+        elevator.AddCabCall(3);
+        elevator.AddCabCall(5);
+        elevator.AddCabCall(7);
 
-        // Act
-        bool moved = elevator.Move();
+        // Act - Elevator is at floor 1, should get all above
+        var upStops = ((IElevatorContext)elevator).GetStopsInDirection(ElevatorDirection.Up).ToList();
 
         // Assert
-        Assert.False(moved);
-        Assert.Equal(1, elevator.CurrentFloor);
+        Assert.Equal(3, upStops.Count);
+        Assert.Equal(new[] { 3, 5, 7 }, upStops);
     }
 
     [Fact]
-    public void CompleteMove_SetsStateToStopped()
+    public void ShouldStopAtCurrentFloor_TrueForCabCall()
     {
         // Arrange
-        var elevator = new Elevator(1);
-        elevator.AddDestination(5, Direction.Up);
-        elevator.Move();
+        var elevator = new Elevator(1, _eventBus);
+        elevator.AddCabCall(1); // Same as current floor
 
         // Act
-        elevator.CompleteMove();
-
-        // Assert
-        Assert.Equal(ElevatorState.Stopped, elevator.State);
-    }
-
-    [Fact]
-    public void ShouldStopAtFloor_ReturnsTrueForDestination()
-    {
-        // Arrange
-        var elevator = new Elevator(1);
-        elevator.AddDestination(2, Direction.Up);
-        elevator.Move(); // Now at floor 2
-
-        // Act
-        bool shouldStop = elevator.ShouldStopAtFloor();
+        var shouldStop = ((IElevatorContext)elevator).ShouldStopAtCurrentFloor();
 
         // Assert
         Assert.True(shouldStop);
     }
 
     [Fact]
-    public void OpenDoors_SetsDoorsOpenState_RemovesDestination()
+    public void ShouldStopAtCurrentFloor_TrueForHallCall()
     {
         // Arrange
-        var elevator = new Elevator(1);
-        elevator.AddDestination(2, Direction.Up);
-        elevator.Move();
-        elevator.CompleteMove();
+        var elevator = new Elevator(1, _eventBus);
+        var call = new HallCall(1, ElevatorDirection.Up);
+        elevator.AssignHallCall(call);
+        ((IElevatorContext)elevator).SetDirection(ElevatorDirection.Up);
 
         // Act
-        elevator.OpenDoors();
+        var shouldStop = ((IElevatorContext)elevator).ShouldStopAtCurrentFloor();
 
         // Assert
-        Assert.Equal(ElevatorState.DoorsOpen, elevator.State);
-        Assert.DoesNotContain(2, elevator.Destinations);
+        Assert.True(shouldStop);
     }
 
     [Fact]
-    public void CloseDoors_SetsStoppedState()
+    public void MoveOneFloor_MovesUp_WhenDirectionUp()
     {
         // Arrange
-        var elevator = new Elevator(1);
-        elevator.AddDestination(2, Direction.Up);
-        elevator.Move();
-        elevator.CompleteMove();
-        elevator.OpenDoors();
+        var elevator = new Elevator(1, _eventBus);
+        ((IElevatorContext)elevator).SetDirection(ElevatorDirection.Up);
 
         // Act
-        elevator.CloseDoors();
+        ((IElevatorContext)elevator).MoveOneFloor();
 
         // Assert
-        Assert.Equal(ElevatorState.Stopped, elevator.State);
+        Assert.Equal(2, elevator.CurrentFloor);
     }
 
     [Fact]
-    public void ScanAlgorithm_ContinuesUpUntilExhausted()
+    public void MoveOneFloor_MovesDown_WhenDirectionDown()
     {
         // Arrange
-        var elevator = new Elevator(1);
-        elevator.AddDestination(3, Direction.Up);
-        elevator.AddDestination(5, Direction.Up);
+        var elevator = new Elevator(1, _eventBus);
+        ((IElevatorContext)elevator).SetDirection(ElevatorDirection.Up);
+        ((IElevatorContext)elevator).MoveOneFloor(); // Go to floor 2
+        ((IElevatorContext)elevator).SetDirection(ElevatorDirection.Down);
 
-        // Act - Move to floor 3
-        while (elevator.CurrentFloor < 3)
-        {
-            elevator.Move();
-            elevator.CompleteMove();
-        }
-        elevator.OpenDoors();
-        elevator.CloseDoors();
+        // Act
+        ((IElevatorContext)elevator).MoveOneFloor();
 
-        // Assert - Should still be going up
-        Assert.Equal(Direction.Up, elevator.Direction);
+        // Assert
+        Assert.Equal(1, elevator.CurrentFloor);
     }
 
     [Fact]
-    public void ScanAlgorithm_ReversesWhenNoMoreDestinationsInDirection()
+    public void ServiceCurrentFloor_RemovesCabCall()
     {
         // Arrange
-        var elevator = new Elevator(1);
-        elevator.AddDestination(3, Direction.Up);
+        var elevator = new Elevator(1, _eventBus);
+        elevator.AddCabCall(1);
 
-        // Act - Move to floor 3 and service it
-        while (elevator.CurrentFloor < 3)
-        {
-            elevator.Move();
-            elevator.CompleteMove();
-        }
-        elevator.OpenDoors();
+        // Act
+        ((IElevatorContext)elevator).ServiceCurrentFloor();
+
+        // Assert
+        Assert.False(elevator.CabCallFloors.Contains(1));
+    }
+
+    [Fact]
+    public void ServiceCurrentFloor_MarksHallCallAsServiced()
+    {
+        // Arrange
+        var elevator = new Elevator(1, _eventBus);
+        var call = new HallCall(1, ElevatorDirection.Up);
+        elevator.AssignHallCall(call);
+        ((IElevatorContext)elevator).SetDirection(ElevatorDirection.Up);
+
+        // Act
+        ((IElevatorContext)elevator).ServiceCurrentFloor();
+
+        // Assert
+        Assert.True(call.IsServiced);
+        Assert.Empty(elevator.AssignedHallCalls); // Serviced calls are removed
+    }
+
+    [Fact]
+    public void CalculateSuitabilityScore_IdleElevator_ReturnsLowScore()
+    {
+        // Arrange
+        var elevator = new Elevator(1, _eventBus);
+        var call = new HallCall(5, ElevatorDirection.Up);
+
+        // Act
+        int score = elevator.CalculateSuitabilityScore(call);
+
+        // Assert - Distance is 4, so score should be 4*10 - 5 = 35
+        Assert.Equal(35, score);
+    }
+
+    [Fact]
+    public void CalculateSuitabilityScore_MovingToward_ReturnsDistanceScore()
+    {
+        // Arrange
+        var elevator = new Elevator(1, _eventBus);
+        elevator.AddCabCall(10); // Going up
+        ((IElevatorContext)elevator).SetDirection(ElevatorDirection.Up);
         
-        // Simulate passenger getting on at floor 3 and wanting to go to floor 1
-        elevator.AddInternalDestination(1);
-        
-        elevator.CloseDoors();
-
-        // Assert - Should reverse to go down since no more up destinations
-        Assert.Equal(Direction.Down, elevator.Direction);
-    }
-
-    [Fact]
-    public void CalculateEffectiveDistance_IdleElevator_ReturnsPhysicalDistance()
-    {
-        // Arrange
-        var elevator = new Elevator(1);
+        var call = new HallCall(5, ElevatorDirection.Up);
 
         // Act
-        int distance = elevator.CalculateEffectiveDistance(5, Direction.Up);
+        int score = elevator.CalculateSuitabilityScore(call);
 
-        // Assert
-        Assert.Equal(4, distance); // |5 - 1| = 4
-    }
-
-    [Fact]
-    public void CalculateEffectiveDistance_MovingToward_ReturnsPhysicalDistance()
-    {
-        // Arrange
-        var elevator = new Elevator(1);
-        elevator.AddDestination(10, Direction.Up);
-
-        // Act
-        int distance = elevator.CalculateEffectiveDistance(5, Direction.Up);
-
-        // Assert
-        Assert.Equal(4, distance); // On the way up, floor 5 is en route
-    }
-
-    [Fact]
-    public void AddDestination_InvalidFloor_IsIgnored()
-    {
-        // Arrange
-        var elevator = new Elevator(1);
-
-        // Act
-        elevator.AddDestination(0, Direction.Up);
-        elevator.AddDestination(11, Direction.Up);
-
-        // Assert
-        Assert.False(elevator.HasDestinations);
+        // Assert - Distance is 4, same direction = 4*10 = 40
+        Assert.Equal(40, score);
     }
 }

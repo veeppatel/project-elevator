@@ -1,3 +1,6 @@
+using ElevatorSystem.Core.Events;
+using ElevatorSystem.Core.Interfaces;
+using ElevatorSystem.Core.Strategies;
 using ElevatorSystem.Models;
 using ElevatorSystem.Services;
 
@@ -8,111 +11,103 @@ namespace ElevatorSystem.Tests;
 /// </summary>
 public class ElevatorControllerTests
 {
-    private readonly Logger _logger = new();
+    private readonly IEventBus _eventBus = new EventBus();
+    private readonly IDispatchStrategy _scanStrategy = new ScanDispatchStrategy();
 
     [Fact]
     public void Constructor_CreatesCorrectNumberOfElevators()
     {
         // Arrange & Act
-        var controller = new ElevatorController(4, _logger);
+        var controller = new ElevatorController(4, _eventBus, _scanStrategy, 100, 100);
 
         // Assert
         Assert.Equal(4, controller.Elevators.Count);
     }
 
     [Fact]
-    public void DispatchElevator_AssignsNearestIdleElevator()
+    public void RegisterHallCall_ReturnsValidCall()
     {
         // Arrange
-        var controller = new ElevatorController(4, _logger);
-        var call = new FloorCall(5, Direction.Up);
+        var controller = new ElevatorController(4, _eventBus, _scanStrategy, 100, 100);
 
         // Act
-        var dispatched = controller.DispatchElevator(call);
+        var call = controller.RegisterHallCall(5, ElevatorDirection.Up);
 
         // Assert
-        Assert.NotNull(dispatched);
-        Assert.Contains(5, dispatched.Destinations);
+        Assert.NotNull(call);
+        Assert.Equal(5, call.Floor);
+        Assert.Equal(ElevatorDirection.Up, call.Direction);
+        Assert.NotNull(call.AssignedElevatorId);
     }
 
     [Fact]
-    public void DispatchElevator_InvalidCall_ReturnsNull()
+    public void RegisterHallCall_AssignsToElevator()
     {
         // Arrange
-        var controller = new ElevatorController(4, _logger);
-        var invalidCall = new FloorCall(0, Direction.Up);
+        var controller = new ElevatorController(4, _eventBus, _scanStrategy, 100, 100);
 
         // Act
-        var dispatched = controller.DispatchElevator(invalidCall);
+        var call = controller.RegisterHallCall(5, ElevatorDirection.Up);
 
         // Assert
-        Assert.Null(dispatched);
+        var assignedElevator = controller.Elevators.First(e => e.Id == call.AssignedElevatorId);
+        Assert.Contains(call, assignedElevator.AssignedHallCalls);
     }
 
     [Fact]
-    public void DispatchElevator_PrefersElevatorMovingTowardCall()
-    {
-        // Arrange - Create two elevators manually
-        var elevator1 = new Elevator(1);
-        var elevator2 = new Elevator(2);
-        
-        // Elevator 1 is at floor 1, going up (has destination at floor 10)
-        elevator1.AddDestination(10, Direction.Up);
-        
-        // Both start at floor 1
-        var elevators = new List<Elevator> { elevator1, elevator2 };
-        var controller = new ElevatorController(elevators, _logger);
-
-        // Act - Call from floor 5 going up
-        var call = new FloorCall(5, Direction.Up);
-        var dispatched = controller.DispatchElevator(call);
-
-        // Assert - Elevator 1 should be preferred (already going up past floor 5)
-        Assert.NotNull(dispatched);
-        Assert.Contains(5, dispatched.Destinations);
-    }
-
-    [Fact]
-    public void AddPassengerDestination_AddsToCorrectElevator()
+    public void AddCabCall_AddsToCorrectElevator()
     {
         // Arrange
-        var controller = new ElevatorController(4, _logger);
+        var controller = new ElevatorController(4, _eventBus, _scanStrategy, 100, 100);
 
         // Act
-        controller.AddPassengerDestination(1, 8);
+        controller.AddCabCall(1, 8);
 
         // Assert
         var elevator = controller.Elevators.First(e => e.Id == 1);
-        Assert.Contains(8, elevator.Destinations);
+        Assert.Contains(8, elevator.CabCallFloors);
     }
 
     [Fact]
-    public void GetSystemStatus_ReturnsFormattedString()
+    public void GetSystemStatus_ReturnsAllElevators()
     {
         // Arrange
-        var controller = new ElevatorController(4, _logger);
+        var controller = new ElevatorController(4, _eventBus, _scanStrategy, 100, 100);
 
         // Act
         var status = controller.GetSystemStatus();
 
         // Assert
-        Assert.Contains("Elevator 1", status);
-        Assert.Contains("Elevator 4", status);
+        Assert.Equal(4, status.Elevators.Count);
+        Assert.Contains(status.Elevators, e => e.Id == 1);
+        Assert.Contains(status.Elevators, e => e.Id == 4);
     }
 
     [Fact]
-    public void DispatchElevator_MultipleCalls_DistributesLoad()
+    public void DispatchStrategy_CanBeChanged()
     {
         // Arrange
-        var controller = new ElevatorController(4, _logger);
+        var nearestStrategy = new NearestDispatchStrategy();
+        var controller = new ElevatorController(4, _eventBus, nearestStrategy, 100, 100);
 
-        // Act - Send multiple calls
-        controller.DispatchElevator(new FloorCall(2, Direction.Up));
-        controller.DispatchElevator(new FloorCall(5, Direction.Up));
-        controller.DispatchElevator(new FloorCall(8, Direction.Down));
+        // Assert
+        Assert.Equal("Nearest", controller.DispatchStrategy.Name);
+    }
 
-        // Assert - At least some elevators should have destinations
-        int elevatorsWithDestinations = controller.Elevators.Count(e => e.HasDestinations);
-        Assert.True(elevatorsWithDestinations >= 1);
+    [Fact]
+    public void MultipleCalls_DistributeAcrossElevators()
+    {
+        // Arrange
+        var controller = new ElevatorController(4, _eventBus, _scanStrategy, 100, 100);
+
+        // Act - Register multiple calls
+        controller.RegisterHallCall(2, ElevatorDirection.Up);
+        controller.RegisterHallCall(5, ElevatorDirection.Up);
+        controller.RegisterHallCall(8, ElevatorDirection.Down);
+        controller.RegisterHallCall(3, ElevatorDirection.Down);
+
+        // Assert - At least some elevators should have calls
+        int elevatorsWithCalls = controller.Elevators.Count(e => e.HasPendingRequests);
+        Assert.True(elevatorsWithCalls >= 1);
     }
 }
