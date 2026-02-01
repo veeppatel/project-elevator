@@ -1,29 +1,35 @@
 {
   "version": 3,
   "targets": {
-    "net8.0": {}
+    "net9.0": {}
   },
   "libraries": {},
   "projectFileDependencyGroups": {
-    "net8.0": []
+    "net9.0": []
   },
   "packageFolders": {
-    "C:\\Users\\Veep Patel\\.nuget\\packages\\": {}
+    "C:\\Users\\Hardiksingh Jamnal\\.nuget\\packages\\": {},
+    "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages": {}
   },
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "C:\\Users\\Veep Patel\\Downloads\\Elevator\\Elevator\\ElevatorSystem\\ElevatorSystem.csproj",
+      "projectUniqueName": "D:\\Learning\\Elevator\\ElevatorSystem\\ElevatorSystem.csproj",
       "projectName": "ElevatorSystem",
-      "projectPath": "C:\\Users\\Veep Patel\\Downloads\\Elevator\\Elevator\\ElevatorSystem\\ElevatorSystem.csproj",
-      "packagesPath": "C:\\Users\\Veep Patel\\.nuget\\packages\\",
-      "outputPath": "C:\\Users\\Veep Patel\\Downloads\\Elevator\\Elevator\\ElevatorSystem\\obj\\",
+      "projectPath": "D:\\Learning\\Elevator\\ElevatorSystem\\ElevatorSystem.csproj",
+      "packagesPath": "C:\\Users\\Hardiksingh Jamnal\\.nuget\\packages\\",
+      "outputPath": "D:\\Learning\\Elevator\\ElevatorSystem\\obj\\",
       "projectStyle": "PackageReference",
+      "fallbackFolders": [
+        "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
+      ],
       "configFilePaths": [
-        "C:\\Users\\Veep Patel\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        "C:\\Users\\Hardiksingh Jamnal\\AppData\\Roaming\\NuGet\\NuGet.Config",
+        "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
+        "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
       ],
       "originalTargetFrameworks": [
-        "net8.0"
+        "net9.0"
       ],
       "sources": {
         "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
@@ -31,8 +37,8 @@
         "https://nuget.pkg.github.com/peddleon/index.json": {}
       },
       "frameworks": {
-        "net8.0": {
-          "targetAlias": "net8.0",
+        "net9.0": {
+          "targetAlias": "net9.0",
           "projectReferences": {}
         }
       },
@@ -44,12 +50,13 @@
       "restoreAuditProperties": {
         "enableAudit": "true",
         "auditLevel": "low",
-        "auditMode": "direct"
-      }
+        "auditMode": "all"
+      },
+      "SdkAnalysisLevel": "9.0.100"
     },
     "frameworks": {
-      "net8.0": {
-        "targetAlias": "net8.0",
+      "net9.0": {
+        "targetAlias": "net9.0",
         "imports": [
           "net461",
           "net462",
@@ -66,7 +73,7 @@
             "privateAssets": "all"
           }
         },
-        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.303/PortableRuntimeIdentifierGraph.json"
+        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.100/PortableRuntimeIdentifierGraph.json"
       }
     }
   }

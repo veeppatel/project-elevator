@@ -1,252 +1,291 @@
+using ElevatorSystem.Core.Events;
+using ElevatorSystem.Core.Interfaces;
+using ElevatorSystem.Core.States;
+
 namespace ElevatorSystem.Models;
 
-public class Elevator
+/// <summary>
+/// Represents a single elevator car in the building.
+/// Uses State Pattern for behavior and properly separates hall calls from cab calls.
+/// </summary>
+public sealed class Elevator : IElevator, IElevatorContext
 {
-    private readonly SortedSet<int> _upDestinations = new();
-    private readonly SortedSet<int> _downDestinations = new();
+    private readonly List<HallCall> _assignedHallCalls = new();
+    private readonly HashSet<int> _cabCallFloors = new();
+    private readonly object _lock = new();
+    
+    private IElevatorState _currentState;
+    private ElevatorDirection _direction;
+    private int _currentFloor;
 
-    /// <summary>
-    /// Unique identifier for this elevator (1-indexed).
-    /// </summary>
+    #region IElevator Properties
+
+    /// <inheritdoc />
     public int Id { get; }
 
-    /// <summary>
-    /// Current floor position of the elevator (1-indexed).
-    /// </summary>
-    public int CurrentFloor { get; private set; }
+    /// <inheritdoc />
+    public int CurrentFloor => _currentFloor;
 
-    /// <summary>
-    /// Current direction of travel.
-    /// </summary>
-    public Direction Direction { get; private set; }
+    /// <inheritdoc />
+    public ElevatorDirection Direction => _direction;
 
-    /// <summary>
-    /// Current operational state of the elevator.
-    /// </summary>
-    public ElevatorState State { get; private set; }
+    /// <inheritdoc />
+    public ElevatorStateType StateType => _currentState.StateType;
+
+    /// <inheritdoc />
+    public IReadOnlySet<int> CabCallFloors
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _cabCallFloors.ToHashSet();
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<HallCall> AssignedHallCalls
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _assignedHallCalls.ToList().AsReadOnly();
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public bool HasPendingRequests
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _cabCallFloors.Count > 0 || _assignedHallCalls.Any(c => !c.IsServiced);
+            }
+        }
+    }
+
+    #endregion
+
+    #region IElevatorContext Properties
+
+    IReadOnlyList<HallCall> IElevatorContext.AssignedHallCalls => AssignedHallCalls;
+    IReadOnlySet<int> IElevatorContext.CabCallFloors => CabCallFloors;
+    public IEventBus EventBus { get; }
+    
+    public int MovementDelayMs { get; }
+    public int DoorDelayMs { get; }
+
+    #endregion
 
     /// <summary>
     /// Creates a new elevator starting at floor 1.
     /// </summary>
-    /// <param name="id">The elevator identifier.</param>
-    public Elevator(int id)
+    public Elevator(int id, IEventBus eventBus, int movementDelayMs, int doorDelayMs)
     {
         Id = id;
-        CurrentFloor = 1;
-        Direction = Direction.Idle;
-        State = ElevatorState.Stopped;
+        EventBus = eventBus;
+        MovementDelayMs = movementDelayMs;
+        DoorDelayMs = doorDelayMs;
+        
+        _currentFloor = 1;
+        _direction = ElevatorDirection.Idle;
+        _currentState = IdleState.Instance;
     }
 
     /// <summary>
-    /// Gets all pending destinations for this elevator.
+    /// Constructor for testing with default timing.
     /// </summary>
-    public IEnumerable<int> Destinations => _upDestinations.Union(_downDestinations);
+    internal Elevator(int id, IEventBus eventBus) 
+        : this(id, eventBus, 1000, 1000) { }
 
-    /// <summary>
-    /// Checks if the elevator has any pending destinations.
-    /// </summary>
-    public bool HasDestinations => _upDestinations.Count > 0 || _downDestinations.Count > 0;
+    #region IElevator Methods
 
-    /// <summary>
-    /// Adds a destination floor based on the direction of travel.
-    /// </summary>
-    /// <param name="floor">Target floor.</param>
-    /// <param name="direction">Direction the passenger wants to go.</param>
-    public void AddDestination(int floor, Direction direction)
+    /// <inheritdoc />
+    public void AssignHallCall(HallCall call)
     {
-        if (floor < Configuration.MinFloor || floor > Configuration.MaxFloor)
+        lock (_lock)
+        {
+            if (!_assignedHallCalls.Contains(call))
+            {
+                call.AssignTo(Id);
+                _assignedHallCalls.Add(call);
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public void AddCabCall(int destinationFloor)
+    {
+        if (destinationFloor < Configuration.MinFloor || destinationFloor > Configuration.MaxFloor)
             return;
 
-        if (direction == Direction.Up || (direction == Direction.Idle && floor > CurrentFloor))
+        lock (_lock)
         {
-            _upDestinations.Add(floor);
+            if (_cabCallFloors.Add(destinationFloor))
+            {
+                EventBus.Publish(new CabCallAddedEvent
+                {
+                    ElevatorId = Id,
+                    Floor = CurrentFloor,
+                    DestinationFloor = destinationFloor
+                });
+            }
         }
-        else if (direction == Direction.Down || (direction == Direction.Idle && floor < CurrentFloor))
-        {
-            _downDestinations.Add(floor);
-        }
-        else if (floor == CurrentFloor)
-        {
-            // Already at destination floor - open doors immediately
-            State = ElevatorState.DoorsOpen;
-        }
-
-        UpdateDirection();
     }
 
-    /// <summary>
-    /// Adds a destination floor for a passenger already inside (selecting floor button).
-    /// </summary>
-    /// <param name="floor">Target floor selected by passenger.</param>
-    public void AddInternalDestination(int floor)
+    /// <inheritdoc />
+    public async Task ProcessAsync(CancellationToken token)
     {
-        if (floor < Configuration.MinFloor || floor > Configuration.MaxFloor)
-            return;
-
-        if (floor > CurrentFloor)
+        var nextState = await _currentState.ProcessAsync(this, token);
+        
+        if (nextState != _currentState)
         {
-            _upDestinations.Add(floor);
+            _currentState.OnExit(this);
+            _currentState = nextState;
+            _currentState.OnEnter(this);
         }
-        else if (floor < CurrentFloor)
+    }
+
+    /// <inheritdoc />
+    public int CalculateSuitabilityScore(HallCall call)
+    {
+        int physicalDistance = Math.Abs(CurrentFloor - call.Floor);
+
+        if (Direction == ElevatorDirection.Idle)
+            return physicalDistance * 10 - 5;
+
+        bool movingToward = Direction switch
         {
-            _downDestinations.Add(floor);
-        }
-
-        UpdateDirection();
-    }
-
-    /// <summary>
-    /// Moves the elevator one floor in its current direction.
-    /// Should only be called when State is Stopped and there are destinations.
-    /// </summary>
-    /// <returns>True if movement occurred, false otherwise.</returns>
-    public bool Move()
-    {
-        if (State != ElevatorState.Stopped || Direction == Direction.Idle)
-            return false;
-
-        State = ElevatorState.Moving;
-
-        if (Direction == Direction.Up && CurrentFloor < Configuration.MaxFloor)
-        {
-            CurrentFloor++;
-        }
-        else if (Direction == Direction.Down && CurrentFloor > Configuration.MinFloor)
-        {
-            CurrentFloor--;
-        }
-
-        return true;
-    }
-
-    /// <summary>
-    /// Completes the movement and checks if the elevator should stop at the current floor.
-    /// </summary>
-    /// <returns>True if the elevator should stop at this floor.</returns>
-    public bool CompleteMove()
-    {
-        State = ElevatorState.Stopped;
-        return ShouldStopAtFloor();
-    }
-
-    /// <summary>
-    /// Determines if the elevator should stop at the current floor.
-    /// </summary>
-    public bool ShouldStopAtFloor()
-    {
-        // Check if current floor is in our destinations
-        if (Direction == Direction.Up && _upDestinations.Contains(CurrentFloor))
-            return true;
-        if (Direction == Direction.Down && _downDestinations.Contains(CurrentFloor))
-            return true;
-
-        // Also stop if we're at the extreme floor in our direction
-        if (Direction == Direction.Up && _upDestinations.Count > 0 && CurrentFloor == _upDestinations.Max)
-            return true;
-        if (Direction == Direction.Down && _downDestinations.Count > 0 && CurrentFloor == _downDestinations.Min)
-            return true;
-
-        return false;
-    }
-
-    /// <summary>
-    /// Opens the doors for passenger boarding/deboarding.
-    /// </summary>
-    public void OpenDoors()
-    {
-        State = ElevatorState.DoorsOpen;
-
-        // Remove current floor from destinations
-        _upDestinations.Remove(CurrentFloor);
-        _downDestinations.Remove(CurrentFloor);
-    }
-
-    /// <summary>
-    /// Closes the doors and prepares for movement.
-    /// </summary>
-    public void CloseDoors()
-    {
-        State = ElevatorState.Stopped;
-        UpdateDirection();
-    }
-
-    /// <summary>
-    /// Calculates the distance to a floor, considering current direction (for dispatch optimization).
-    /// </summary>
-    /// <param name="floor">Target floor.</param>
-    /// <param name="direction">Requested direction at that floor.</param>
-    /// <returns>Effective distance (lower is better).</returns>
-    public int CalculateEffectiveDistance(int floor, Direction direction)
-    {
-        int physicalDistance = Math.Abs(CurrentFloor - floor);
-
-        // Idle elevator - just physical distance
-        if (Direction == Direction.Idle)
-            return physicalDistance;
-
-        // Moving toward the floor in compatible direction
-        bool isOnTheWay = Direction switch
-        {
-            Direction.Up => floor > CurrentFloor && (direction == Direction.Up || direction == Direction.Idle),
-            Direction.Down => floor < CurrentFloor && (direction == Direction.Down || direction == Direction.Idle),
+            ElevatorDirection.Up => call.Floor > CurrentFloor,
+            ElevatorDirection.Down => call.Floor < CurrentFloor,
             _ => false
         };
 
-        if (isOnTheWay)
-            return physicalDistance;
+        if (movingToward && Direction == call.Direction)
+            return physicalDistance * 10;
 
-        // Need to reverse direction - add penalty
-        int penalty = Direction switch
-        {
-            Direction.Up => (_upDestinations.Count > 0 ? _upDestinations.Max - CurrentFloor : 0) +
-                           (_upDestinations.Count > 0 ? _upDestinations.Max : CurrentFloor) - floor,
-            Direction.Down => (_downDestinations.Count > 0 ? CurrentFloor - _downDestinations.Min : 0) +
-                             floor - (_downDestinations.Count > 0 ? _downDestinations.Min : CurrentFloor),
-            _ => 0
-        };
-
-        return physicalDistance + Math.Abs(penalty);
+        // Penalty for not being optimal
+        return physicalDistance * 10 + 100;
     }
 
-    /// <summary>
-    /// Updates the direction based on current destinations (SCAN algorithm).
-    /// </summary>
-    private void UpdateDirection()
+    #endregion
+
+    #region IElevatorContext Methods
+
+    /// <inheritdoc />
+    public void MoveOneFloor()
     {
-        if (!HasDestinations)
+        if (_direction == ElevatorDirection.Up && _currentFloor < Configuration.MaxFloor)
         {
-            Direction = Direction.Idle;
-            return;
+            _currentFloor++;
         }
-
-        // SCAN algorithm: continue in current direction if there are destinations that way
-        if (Direction == Direction.Up)
+        else if (_direction == ElevatorDirection.Down && _currentFloor > Configuration.MinFloor)
         {
-            // Any destinations above current floor?
-            if (_upDestinations.Any(f => f > CurrentFloor) || _upDestinations.Contains(CurrentFloor))
-                return; // Keep going up
-
-            // Otherwise reverse
-            Direction = _downDestinations.Count > 0 ? Direction.Down : Direction.Idle;
-        }
-        else if (Direction == Direction.Down)
-        {
-            // Any destinations below current floor?
-            if (_downDestinations.Any(f => f < CurrentFloor) || _downDestinations.Contains(CurrentFloor))
-                return; // Keep going down
-
-            // Otherwise reverse
-            Direction = _upDestinations.Count > 0 ? Direction.Up : Direction.Idle;
-        }
-        else // Idle
-        {
-            // Pick direction based on which destination list has items
-            if (_upDestinations.Count > 0)
-                Direction = Direction.Up;
-            else if (_downDestinations.Count > 0)
-                Direction = Direction.Down;
+            _currentFloor--;
         }
     }
 
-    public override string ToString() => $"Elevator {Id}: Floor {CurrentFloor}, {Direction}, {State}";
+    /// <inheritdoc />
+    public void SetDirection(ElevatorDirection direction)
+    {
+        _direction = direction;
+    }
+
+    /// <inheritdoc />
+    public void ServiceCurrentFloor()
+    {
+        lock (_lock)
+        {
+            // Service cab calls for this floor
+            if (_cabCallFloors.Remove(_currentFloor))
+            {
+                EventBus.Publish(new PassengerDeliveredEvent
+                {
+                    ElevatorId = Id,
+                    Floor = _currentFloor,
+                    DestinationFloor = _currentFloor
+                });
+            }
+
+            // Service hall calls for this floor in current direction
+            var servicedCalls = _assignedHallCalls
+                .Where(c => c.Floor == _currentFloor && 
+                           !c.IsServiced && 
+                           (c.Direction == _direction || _direction == ElevatorDirection.Idle))
+                .ToList();
+
+            foreach (var call in servicedCalls)
+            {
+                call.MarkServiced();
+                
+                EventBus.Publish(new HallCallServicedEvent
+                {
+                    CallId = call.Id,
+                    Floor = call.Floor,
+                    ElevatorId = Id,
+                    WaitTime = DateTime.UtcNow - call.Timestamp
+                });
+            }
+
+            // Remove serviced calls
+            _assignedHallCalls.RemoveAll(c => c.IsServiced);
+        }
+    }
+
+    /// <inheritdoc />
+    public bool ShouldStopAtCurrentFloor()
+    {
+        lock (_lock)
+        {
+            // Stop for cab calls
+            if (_cabCallFloors.Contains(_currentFloor))
+                return true;
+
+            // Stop for hall calls in current direction
+            return _assignedHallCalls.Any(c => 
+                c.Floor == _currentFloor && 
+                !c.IsServiced &&
+                (c.Direction == _direction || _direction == ElevatorDirection.Idle));
+        }
+    }
+
+    /// <inheritdoc />
+    public IEnumerable<int> GetStopsInDirection(ElevatorDirection direction)
+    {
+        lock (_lock)
+        {
+            var stops = new HashSet<int>();
+
+            // Add cab calls in direction
+            foreach (var floor in _cabCallFloors)
+            {
+                if (direction == ElevatorDirection.Up && floor > _currentFloor)
+                    stops.Add(floor);
+                else if (direction == ElevatorDirection.Down && floor < _currentFloor)
+                    stops.Add(floor);
+            }
+
+            // Add hall calls in direction
+            foreach (var call in _assignedHallCalls.Where(c => !c.IsServiced))
+            {
+                if (direction == ElevatorDirection.Up && call.Floor > _currentFloor)
+                    stops.Add(call.Floor);
+                else if (direction == ElevatorDirection.Down && call.Floor < _currentFloor)
+                    stops.Add(call.Floor);
+                else if (call.Floor == _currentFloor)
+                    stops.Add(call.Floor);
+            }
+
+            return stops.OrderBy(f => direction == ElevatorDirection.Up ? f : -f);
+        }
+    }
+
+    #endregion
+
+    public override string ToString() => 
+        $"Elevator {Id}: Floor {CurrentFloor}, {Direction}, {StateType}";
 }

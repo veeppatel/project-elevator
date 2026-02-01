@@ -1,15 +1,21 @@
+using ElevatorSystem.Core.Interfaces;
 using ElevatorSystem.Models;
 
 namespace ElevatorSystem.Services;
 
 /// <summary>
 /// Represents the building and handles random call generation.
+/// Passengers make hall calls; cab calls are made when they board.
 /// </summary>
-public class Building
+public sealed class Building
 {
     private readonly Random _random;
     private readonly ElevatorController _controller;
-    private readonly Logger _logger;
+    private readonly IEventBus _eventBus;
+    
+    // Track passengers waiting at each floor (for simulation realism)
+    private readonly Dictionary<Guid, int> _waitingPassengerDestinations = new();
+    private readonly object _lock = new();
 
     /// <summary>
     /// Total number of floors in the building.
@@ -17,97 +23,97 @@ public class Building
     public int TotalFloors { get; }
 
     /// <summary>
-    /// Creates a new building with the specified configuration.
+    /// Creates a new building.
     /// </summary>
-    /// <param name="totalFloors">Number of floors in the building.</param>
-    /// <param name="controller">Elevator controller to dispatch requests to.</param>
-    /// <param name="logger">Logger for output.</param>
-    public Building(int totalFloors, ElevatorController controller, Logger logger)
+    public Building(int totalFloors, ElevatorController controller, IEventBus eventBus)
     {
         TotalFloors = totalFloors;
         _controller = controller;
-        _logger = logger;
+        _eventBus = eventBus;
         _random = new Random();
+        
+        // Subscribe to hall call serviced events to add cab calls
+        _eventBus.Subscribe<Core.Events.HallCallServicedEvent>(OnHallCallServiced);
     }
 
     /// <summary>
-    /// Constructor for testing - allows injecting a seeded random.
+    /// Constructor for testing with seeded random.
     /// </summary>
-    internal Building(int totalFloors, ElevatorController controller, Logger logger, Random random)
+    internal Building(int totalFloors, ElevatorController controller, IEventBus eventBus, Random random)
+        : this(totalFloors, controller, eventBus)
     {
-        TotalFloors = totalFloors;
-        _controller = controller;
-        _logger = logger;
         _random = random;
     }
 
     /// <summary>
-    /// Generates a random floor call and dispatches it.
+    /// Generates a random hall call (passenger presses button on a floor).
     /// </summary>
-    /// <returns>The generated floor call.</returns>
-    public FloorCall GenerateRandomCall()
+    public HallCall GenerateRandomCall()
     {
         int floor = _random.Next(Configuration.MinFloor, Configuration.MaxFloor + 1);
         
-        // Determine valid directions for this floor
-        Direction direction;
+        // Determine valid direction for this floor
+        ElevatorDirection direction;
         if (floor == Configuration.MinFloor)
         {
-            direction = Direction.Up;
+            direction = ElevatorDirection.Up;
         }
         else if (floor == Configuration.MaxFloor)
         {
-            direction = Direction.Down;
+            direction = ElevatorDirection.Down;
         }
         else
         {
-            direction = _random.Next(2) == 0 ? Direction.Up : Direction.Down;
+            direction = _random.Next(2) == 0 ? ElevatorDirection.Up : ElevatorDirection.Down;
         }
 
-        var call = new FloorCall(floor, direction);
-        RegisterCall(call);
+        var call = _controller.RegisterHallCall(floor, direction);
+        
+        // Generate the passenger's intended destination (they'll select it when boarding)
+        int destination = GenerateRandomDestination(floor, direction);
+        
+        lock (_lock)
+        {
+            _waitingPassengerDestinations[call.Id] = destination;
+        }
         
         return call;
     }
 
     /// <summary>
-    /// Registers a floor call and dispatches an elevator.
+    /// Called when a hall call is serviced - passenger boards and selects destination.
     /// </summary>
-    /// <param name="call">The floor call to register.</param>
-    public void RegisterCall(FloorCall call)
+    private void OnHallCallServiced(Core.Events.HallCallServicedEvent evt)
     {
-        if (!call.IsValid)
+        int destination;
+        lock (_lock)
         {
-            _logger.LogWarning($"Invalid call rejected: Floor {call.Floor}, Direction {call.Direction}");
-            return;
+            if (!_waitingPassengerDestinations.TryGetValue(evt.CallId, out destination))
+            {
+                return;
+            }
+            _waitingPassengerDestinations.Remove(evt.CallId);
         }
 
-        _logger.LogCallReceived(call.Floor, call.Direction);
-        
-        // Generate a random destination for the simulated passenger
-        int destination = GenerateRandomDestination(call.Floor, call.Direction);
-        
-        var elevator = _controller.DispatchElevator(call);
-        
-        // When elevator arrives, passenger will select their destination
-        // This is handled in the simulation loop
-        if (elevator != null)
-        {
-            elevator.AddInternalDestination(destination);
-        }
+        // Passenger boards and presses their destination floor
+        _controller.AddCabCall(evt.ElevatorId, destination);
     }
 
     /// <summary>
     /// Generates a random destination floor based on the call direction.
     /// </summary>
-    private int GenerateRandomDestination(int fromFloor, Direction direction)
+    private int GenerateRandomDestination(int fromFloor, ElevatorDirection direction)
     {
-        if (direction == Direction.Up)
+        if (direction == ElevatorDirection.Up)
         {
+            if (fromFloor >= Configuration.MaxFloor)
+                return Configuration.MaxFloor;
             return _random.Next(fromFloor + 1, Configuration.MaxFloor + 1);
         }
         else
         {
+            if (fromFloor <= Configuration.MinFloor)
+                return Configuration.MinFloor;
             return _random.Next(Configuration.MinFloor, fromFloor);
         }
     }

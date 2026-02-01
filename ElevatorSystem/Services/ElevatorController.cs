@@ -1,109 +1,185 @@
+using ElevatorSystem.Core.Events;
+using ElevatorSystem.Core.Interfaces;
 using ElevatorSystem.Models;
 
 namespace ElevatorSystem.Services;
 
 /// <summary>
-/// Controls and coordinates multiple elevators. Handles call dispatching
-/// using an optimized algorithm that considers proximity and direction.
+/// Controls and coordinates multiple elevators using the Strategy Pattern for dispatch.
+/// Manages hall call queue and assigns calls to appropriate elevators.
 /// </summary>
-public class ElevatorController
+public sealed class ElevatorController
 {
-    private readonly List<Elevator> _elevators;
-    private readonly Logger _logger;
+    private readonly List<IElevator> _elevators;
+    private readonly List<HallCall> _pendingHallCalls = new();
+    private readonly IDispatchStrategy _dispatchStrategy;
+    private readonly IEventBus _eventBus;
+    private readonly object _lock = new();
 
     /// <summary>
     /// Gets a read-only view of all elevators.
     /// </summary>
-    public IReadOnlyList<Elevator> Elevators => _elevators.AsReadOnly();
+    public IReadOnlyList<IElevator> Elevators => _elevators.AsReadOnly();
 
     /// <summary>
-    /// Creates a new elevator controller with the specified number of elevators.
+    /// Gets pending hall calls that haven't been serviced yet.
     /// </summary>
-    /// <param name="elevatorCount">Number of elevators to manage.</param>
-    /// <param name="logger">Logger for output.</param>
-    public ElevatorController(int elevatorCount, Logger logger)
+    public IReadOnlyList<HallCall> PendingHallCalls
     {
-        _logger = logger;
-        _elevators = new List<Elevator>();
-        
-        for (int i = 1; i <= elevatorCount; i++)
+        get
         {
-            _elevators.Add(new Elevator(i));
-        }
-    }
-
-    /// <summary>
-    /// Constructor for testing - allows injecting pre-configured elevators.
-    /// </summary>
-    internal ElevatorController(List<Elevator> elevators, Logger logger)
-    {
-        _elevators = elevators;
-        _logger = logger;
-    }
-
-    /// <summary>
-    /// Dispatches an elevator to respond to a floor call.
-    /// Uses an optimized algorithm that prioritizes:
-    /// 1. Idle elevators closest to the floor
-    /// 2. Elevators moving toward the floor in the same direction
-    /// 3. Any available elevator (by distance)
-    /// </summary>
-    /// <param name="call">The floor call to service.</param>
-    /// <returns>The dispatched elevator, or null if none available.</returns>
-    public Elevator? DispatchElevator(FloorCall call)
-    {
-        if (!call.IsValid)
-            return null;
-
-        Elevator? bestElevator = null;
-        int bestScore = int.MaxValue;
-
-        foreach (var elevator in _elevators)
-        {
-            int score = elevator.CalculateEffectiveDistance(call.Floor, call.Direction);
-
-            // Bonus for idle elevators (prefer them slightly)
-            if (elevator.Direction == Direction.Idle)
-                score -= 1;
-
-            if (score < bestScore)
+            lock (_lock)
             {
-                bestScore = score;
-                bestElevator = elevator;
+                return _pendingHallCalls.Where(c => !c.IsServiced).ToList().AsReadOnly();
             }
         }
-
-        if (bestElevator != null)
-        {
-            bestElevator.AddDestination(call.Floor, call.Direction);
-            _logger.LogElevatorDispatched(bestElevator.Id, call.Floor, call.Direction);
-        }
-
-        return bestElevator;
     }
 
     /// <summary>
-    /// Simulates a passenger inside an elevator pressing a floor button.
+    /// The dispatch strategy being used.
     /// </summary>
-    /// <param name="elevatorId">The elevator the passenger is in.</param>
-    /// <param name="destinationFloor">The desired destination floor.</param>
-    public void AddPassengerDestination(int elevatorId, int destinationFloor)
+    public IDispatchStrategy DispatchStrategy => _dispatchStrategy;
+
+    /// <summary>
+    /// Creates a new elevator controller.
+    /// </summary>
+    public ElevatorController(
+        int elevatorCount, 
+        IEventBus eventBus, 
+        IDispatchStrategy dispatchStrategy,
+        int movementDelayMs,
+        int doorDelayMs)
+    {
+        _eventBus = eventBus;
+        _dispatchStrategy = dispatchStrategy;
+        _elevators = new List<IElevator>();
+
+        for (int i = 1; i <= elevatorCount; i++)
+        {
+            _elevators.Add(new Elevator(i, eventBus, movementDelayMs, doorDelayMs));
+        }
+    }
+
+    /// <summary>
+    /// Constructor for testing with pre-configured elevators.
+    /// </summary>
+    internal ElevatorController(
+        List<IElevator> elevators, 
+        IEventBus eventBus, 
+        IDispatchStrategy dispatchStrategy)
+    {
+        _elevators = elevators;
+        _eventBus = eventBus;
+        _dispatchStrategy = dispatchStrategy;
+    }
+
+    /// <summary>
+    /// Registers a new hall call and dispatches an elevator to service it.
+    /// </summary>
+    public HallCall RegisterHallCall(int floor, ElevatorDirection direction)
+    {
+        var call = new HallCall(floor, direction);
+        
+        _eventBus.Publish(new HallCallReceivedEvent
+        {
+            Floor = floor,
+            Direction = direction,
+            CallId = call.Id
+        });
+
+        lock (_lock)
+        {
+            _pendingHallCalls.Add(call);
+        }
+
+        DispatchElevator(call);
+        
+        return call;
+    }
+
+    /// <summary>
+    /// Dispatches an elevator to service a hall call.
+    /// </summary>
+    private void DispatchElevator(HallCall call)
+    {
+        var selectedElevator = _dispatchStrategy.SelectElevator(call, _elevators);
+
+        if (selectedElevator != null)
+        {
+            selectedElevator.AssignHallCall(call);
+            
+            _eventBus.Publish(new HallCallAssignedEvent
+            {
+                CallId = call.Id,
+                Floor = call.Floor,
+                Direction = call.Direction,
+                ElevatorId = selectedElevator.Id,
+                EstimatedStops = CountStopsBefore(selectedElevator, call.Floor)
+            });
+        }
+    }
+
+    /// <summary>
+    /// Counts stops before reaching the target floor (for ETA estimation).
+    /// </summary>
+    private int CountStopsBefore(IElevator elevator, int targetFloor)
+    {
+        var stops = elevator.CabCallFloors
+            .Concat(elevator.AssignedHallCalls.Select(c => c.Floor))
+            .Distinct()
+            .ToList();
+
+        if (elevator.Direction == ElevatorDirection.Up)
+        {
+            return stops.Count(f => f > elevator.CurrentFloor && f < targetFloor);
+        }
+        else if (elevator.Direction == ElevatorDirection.Down)
+        {
+            return stops.Count(f => f < elevator.CurrentFloor && f > targetFloor);
+        }
+        
+        return 0;
+    }
+
+    /// <summary>
+    /// Adds a cab call for a passenger inside an elevator.
+    /// </summary>
+    public void AddCabCall(int elevatorId, int destinationFloor)
     {
         var elevator = _elevators.FirstOrDefault(e => e.Id == elevatorId);
-        elevator?.AddInternalDestination(destinationFloor);
-        
-        if (elevator != null)
+        elevator?.AddCabCall(destinationFloor);
+    }
+
+    /// <summary>
+    /// Cleans up serviced hall calls.
+    /// </summary>
+    public void CleanupServicedCalls()
+    {
+        lock (_lock)
         {
-            _logger.LogPassengerDestination(elevatorId, destinationFloor);
+            _pendingHallCalls.RemoveAll(c => c.IsServiced);
         }
     }
 
     /// <summary>
-    /// Gets the current status of all elevators for display.
+    /// Gets system status snapshot for display.
     /// </summary>
-    /// <returns>Formatted status string.</returns>
-    public string GetSystemStatus()
+    public SystemStatusEvent GetSystemStatus()
     {
-        return string.Join("\n", _elevators.Select(e => e.ToString()));
+        var snapshots = _elevators.Select(e => new ElevatorSnapshot
+        {
+            Id = e.Id,
+            CurrentFloor = e.CurrentFloor,
+            Direction = e.Direction,
+            State = e.StateType,
+            Destinations = e.CabCallFloors.Concat(e.AssignedHallCalls.Select(c => c.Floor)).Distinct().Order().ToList(),
+            AssignedHallCallCount = e.AssignedHallCalls.Count
+        }).ToList();
+
+        return new SystemStatusEvent
+        {
+            Elevators = snapshots,
+            PendingHallCalls = PendingHallCalls.Count
+        };
     }
 }

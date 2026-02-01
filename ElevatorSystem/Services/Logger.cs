@@ -1,168 +1,284 @@
+using ElevatorSystem.Core.Events;
+using ElevatorSystem.Core.Interfaces;
 using ElevatorSystem.Models;
 
 namespace ElevatorSystem.Services;
 
 /// <summary>
-/// Handles console output with color coding for easy visualization.
+/// Enhanced logger with visual building display and structured output.
+/// Subscribes to elevator events for decoupled logging.
 /// </summary>
-public class Logger
+public sealed class ElevatorLogger : IDisposable
 {
     private readonly object _lock = new();
+    private readonly List<IDisposable> _subscriptions = new();
+    
+    // Track hall calls for visual display
+    private readonly HashSet<(int Floor, ElevatorDirection Direction)> _activeHallCalls = new();
 
-    /// <summary>
-    /// Logs a floor call request.
-    /// </summary>
-    public void LogCallReceived(int floor, Direction direction)
+    public ElevatorLogger(IEventBus eventBus)
     {
-        Log(ConsoleColor.Yellow, $"📞 CALL: \"{direction}\" request on floor {floor}");
+        // Subscribe to all relevant events
+        _subscriptions.Add(eventBus.Subscribe<ElevatorMovingEvent>(OnElevatorMoving));
+        _subscriptions.Add(eventBus.Subscribe<ElevatorArrivedEvent>(OnElevatorArrived));
+        _subscriptions.Add(eventBus.Subscribe<DoorsOpenedEvent>(OnDoorsOpened));
+        _subscriptions.Add(eventBus.Subscribe<DoorsClosedEvent>(OnDoorsClosed));
+        _subscriptions.Add(eventBus.Subscribe<ElevatorIdleEvent>(OnElevatorIdle));
+        _subscriptions.Add(eventBus.Subscribe<DirectionChangedEvent>(OnDirectionChanged));
+        _subscriptions.Add(eventBus.Subscribe<HallCallReceivedEvent>(OnHallCallReceived));
+        _subscriptions.Add(eventBus.Subscribe<HallCallAssignedEvent>(OnHallCallAssigned));
+        _subscriptions.Add(eventBus.Subscribe<HallCallServicedEvent>(OnHallCallServiced));
+        _subscriptions.Add(eventBus.Subscribe<CabCallAddedEvent>(OnCabCallAdded));
+        _subscriptions.Add(eventBus.Subscribe<PassengerDeliveredEvent>(OnPassengerDelivered));
     }
 
-    /// <summary>
-    /// Logs elevator dispatch.
-    /// </summary>
-    public void LogElevatorDispatched(int elevatorId, int floor, Direction direction)
+    #region Event Handlers
+
+    private void OnElevatorMoving(ElevatorMovingEvent evt)
     {
-        Log(ConsoleColor.Cyan, $"🚀 DISPATCH: Elevator {elevatorId} assigned to floor {floor} ({direction})");
+        string arrow = evt.Direction == ElevatorDirection.Up ? "▲" : "▼";
+        string stops = evt.PendingStops.Any() ? $"[{string.Join(",", evt.PendingStops.Take(5))}{(evt.PendingStops.Count > 5 ? "..." : "")}]" : "";
+        LogEvent($"E{evt.ElevatorId}", "MOVING", $"{evt.FromFloor}→{evt.ToFloor} {arrow} {stops}", ConsoleColor.Blue);
     }
 
-    /// <summary>
-    /// Logs elevator movement.
-    /// </summary>
-    public void LogElevatorMoving(int elevatorId, int fromFloor, int toFloor)
+    private void OnElevatorArrived(ElevatorArrivedEvent evt)
     {
-        Log(ConsoleColor.Blue, $"⬆️ MOVE: Elevator {elevatorId} moving from floor {fromFloor} to floor {toFloor}");
+        string arrow = evt.Direction == ElevatorDirection.Up ? "▲" : "▼";
+        LogEvent($"E{evt.ElevatorId}", "ARRIVED", $"Floor {evt.Floor} {arrow}", ConsoleColor.Cyan);
     }
 
-    /// <summary>
-    /// Logs elevator arrival at a floor.
-    /// </summary>
-    public void LogElevatorArrival(int elevatorId, int floor)
+    private void OnDoorsOpened(DoorsOpenedEvent evt)
     {
-        Log(ConsoleColor.Green, $"🔔 ARRIVAL: Elevator {elevatorId} arrived at floor {floor}");
+        string action = "";
+        if (evt.PassengersBoarding > 0) action += $"+{evt.PassengersBoarding}";
+        if (evt.PassengersAlighting > 0) action += $" -{evt.PassengersAlighting}";
+        LogEvent($"E{evt.ElevatorId}", "DOORS_OPEN", $"Floor {evt.Floor} {action}".Trim(), ConsoleColor.Green);
     }
 
-    /// <summary>
-    /// Logs doors opening.
-    /// </summary>
-    public void LogDoorsOpen(int elevatorId, int floor)
+    private void OnDoorsClosed(DoorsClosedEvent evt)
     {
-        Log(ConsoleColor.Green, $"🚪 DOORS OPEN: Elevator {elevatorId} doors open on floor {floor}");
+        LogEvent($"E{evt.ElevatorId}", "DOORS_CLOSED", $"Floor {evt.Floor}", ConsoleColor.DarkGray);
     }
 
-    /// <summary>
-    /// Logs doors closing.
-    /// </summary>
-    public void LogDoorsClosed(int elevatorId)
+    private void OnElevatorIdle(ElevatorIdleEvent evt)
     {
-        Log(ConsoleColor.DarkGray, $"🚪 DOORS CLOSED: Elevator {elevatorId} doors closed");
+        LogEvent($"E{evt.ElevatorId}", "IDLE", $"Floor {evt.Floor}", ConsoleColor.Gray);
     }
 
-    /// <summary>
-    /// Logs a passenger destination selection.
-    /// </summary>
-    public void LogPassengerDestination(int elevatorId, int floor)
+    private void OnDirectionChanged(DirectionChangedEvent evt)
     {
-        Log(ConsoleColor.Magenta, $"👤 PASSENGER: Elevator {elevatorId} - passenger selected floor {floor}");
+        string oldDir = evt.OldDirection == ElevatorDirection.Up ? "▲" : "▼";
+        string newDir = evt.NewDirection == ElevatorDirection.Up ? "▲" : "▼";
+        LogEvent($"E{evt.ElevatorId}", "REVERSE", $"{oldDir}→{newDir} at floor {evt.Floor}", ConsoleColor.Yellow);
     }
 
-    /// <summary>
-    /// Logs current positions of all elevators.
-    /// </summary>
-    public void LogElevatorPositions(IReadOnlyList<Elevator> elevators)
+    private void OnHallCallReceived(HallCallReceivedEvent evt)
+    {
+        string arrow = evt.Direction == ElevatorDirection.Up ? "▲" : "▼";
+        lock (_lock)
+        {
+            _activeHallCalls.Add((evt.Floor, evt.Direction));
+        }
+        LogEvent("SYS", "HALL_CALL", $"Floor {evt.Floor} {arrow} requested", ConsoleColor.Yellow);
+    }
+
+    private void OnHallCallAssigned(HallCallAssignedEvent evt)
+    {
+        string arrow = evt.Direction == ElevatorDirection.Up ? "▲" : "▼";
+        string eta = evt.EstimatedStops > 0 ? $" (ETA: {evt.EstimatedStops} stops)" : "";
+        LogEvent("SYS", "ASSIGNED", $"Floor {evt.Floor} {arrow} → E{evt.ElevatorId}{eta}", ConsoleColor.Cyan);
+    }
+
+    private void OnHallCallServiced(HallCallServicedEvent evt)
     {
         lock (_lock)
         {
+            _activeHallCalls.RemoveWhere(c => c.Floor == evt.Floor);
+        }
+        LogEvent($"E{evt.ElevatorId}", "PICKUP", $"Floor {evt.Floor} (waited {evt.WaitTime.TotalSeconds:F1}s)", ConsoleColor.Green);
+    }
+
+    private void OnCabCallAdded(CabCallAddedEvent evt)
+    {
+        LogEvent($"E{evt.ElevatorId}", "CAB_CALL", $"Passenger selected floor {evt.DestinationFloor}", ConsoleColor.Magenta);
+    }
+
+    private void OnPassengerDelivered(PassengerDeliveredEvent evt)
+    {
+        LogEvent($"E{evt.ElevatorId}", "DELIVERED", $"Passenger to floor {evt.DestinationFloor}", ConsoleColor.Green);
+    }
+
+    #endregion
+
+    /// <summary>
+    /// Logs an event with structured format.
+    /// </summary>
+    private void LogEvent(string source, string eventType, string details, ConsoleColor color)
+    {
+        string timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+        
+        lock (_lock)
+        {
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.Write($"[{timestamp}] ");
             Console.ForegroundColor = ConsoleColor.White;
-            Console.WriteLine("\n═══════════════════════════════════════════════════════════════");
-            Console.WriteLine("                    ELEVATOR STATUS");
-            Console.WriteLine("═══════════════════════════════════════════════════════════════");
-            
-            foreach (var elevator in elevators)
-            {
-                string directionIcon = elevator.Direction switch
-                {
-                    Direction.Up => "⬆️",
-                    Direction.Down => "⬇️",
-                    _ => "⏸️"
-                };
-
-                string stateIcon = elevator.State switch
-                {
-                    ElevatorState.Moving => "🔄",
-                    ElevatorState.DoorsOpen => "🚪",
-                    _ => "⏹️"
-                };
-
-                var destinations = elevator.Destinations.ToList();
-                string destStr = destinations.Any() 
-                    ? $"→ [{string.Join(", ", destinations)}]" 
-                    : "";
-
-                Console.WriteLine($"  Elevator {elevator.Id}: Floor {elevator.CurrentFloor,2} {directionIcon} {stateIcon} {destStr}");
-            }
-            
-            Console.WriteLine("═══════════════════════════════════════════════════════════════\n");
+            Console.Write($"{source,-4} ");
+            Console.ForegroundColor = color;
+            Console.Write($"{eventType,-12} ");
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.WriteLine(details);
             Console.ResetColor();
         }
     }
 
     /// <summary>
-    /// Logs a warning message.
+    /// Displays visual building status with elevator positions.
     /// </summary>
-    public void LogWarning(string message)
+    public void DisplayBuildingStatus(SystemStatusEvent status)
     {
-        Log(ConsoleColor.DarkYellow, $"⚠️ WARNING: {message}");
+        lock (_lock)
+        {
+            Console.WriteLine();
+            Console.ForegroundColor = ConsoleColor.White;
+            
+            // Simple fixed-width display
+            Console.WriteLine("┌──────┬───────────────────────────────────────────────────────────┐");
+            Console.WriteLine("│FLOOR │  E1    E2    E3    E4  │ CALLS  │ STATUS                 │");
+            Console.WriteLine("├──────┼───────────────────────────────────────────────────────────┤");
+
+            // Display each floor from top to bottom
+            for (int floor = Configuration.MaxFloor; floor >= Configuration.MinFloor; floor--)
+            {
+                DisplayFloorRowSimple(floor, status.Elevators);
+            }
+
+            Console.WriteLine("└──────┴───────────────────────────────────────────────────────────┘");
+            
+            // Legend
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.WriteLine($"  Pending Calls: {status.PendingHallCalls} | [▲]=Up [▼]=Down [●]=Idle [◐]=DoorsOpen");
+            Console.ResetColor();
+            Console.WriteLine();
+        }
+    }
+
+    private void DisplayFloorRowSimple(int floor, IReadOnlyList<ElevatorSnapshot> elevators)
+    {
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.Write($"│  {floor,2}  │ ");
+
+        // Show each elevator's position with fixed width
+        foreach (var elevator in elevators)
+        {
+            if (elevator.CurrentFloor == floor)
+            {
+                ConsoleColor color = elevator.State switch
+                {
+                    ElevatorStateType.DoorsOpen => ConsoleColor.Green,
+                    ElevatorStateType.Moving => ConsoleColor.Cyan,
+                    _ => ConsoleColor.Yellow
+                };
+                Console.ForegroundColor = color;
+                
+                string symbol = elevator.State switch
+                {
+                    ElevatorStateType.DoorsOpen => "◐",
+                    ElevatorStateType.Moving => elevator.Direction == ElevatorDirection.Up ? "▲" : "▼",
+                    _ => "●"
+                };
+                Console.Write($" [{elevator.Id}]{symbol}");
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.Write("  ·  ");
+            }
+        }
+
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.Write(" │ ");
+        
+        // Show hall calls at this floor
+        bool hasUpCall = _activeHallCalls.Contains((floor, ElevatorDirection.Up));
+        bool hasDownCall = _activeHallCalls.Contains((floor, ElevatorDirection.Down));
+        
+        if (hasUpCall || hasDownCall)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.Write(hasUpCall ? "▲" : " ");
+            Console.Write(hasDownCall ? "▼" : " ");
+            Console.Write("   ");
+        }
+        else
+        {
+            Console.Write("      ");
+        }
+        
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.Write("│ ");
+
+        // Show elevator details if at this floor (truncated)
+        var elevatorsAtFloor = elevators.Where(e => e.CurrentFloor == floor).ToList();
+        if (elevatorsAtFloor.Any())
+        {
+            Console.ForegroundColor = ConsoleColor.White;
+            var details = elevatorsAtFloor
+                .Select(e => $"E{e.Id}→{(e.Destinations.Any() ? string.Join(",", e.Destinations.Take(3)) : "-")}")
+                .Take(2);
+            Console.Write(string.Join(" ", details).PadRight(22));
+        }
+        else
+        {
+            Console.Write("                      ");
+        }
+        
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.WriteLine(" │");
     }
 
     /// <summary>
-    /// Logs an informational message.
+    /// Displays simulation start banner.
     /// </summary>
-    public void LogInfo(string message)
-    {
-        Log(ConsoleColor.Gray, $"ℹ️ {message}");
-    }
-
-    /// <summary>
-    /// Logs a simulation start message.
-    /// </summary>
-    public void LogSimulationStart()
+    public void LogSimulationStart(string strategyName, double speedMultiplier)
     {
         lock (_lock)
         {
             Console.Clear();
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine(@"
-╔═══════════════════════════════════════════════════════════════╗
-║           ELEVATOR CONTROL SYSTEM SIMULATION                  ║
-║                                                               ║
-║  • 10 Floors  • 4 Elevators                                   ║
-║  • 10s per floor  • 10s door time                             ║
-║                                                               ║
-║  Press Ctrl+C to stop the simulation                          ║
-╚═══════════════════════════════════════════════════════════════╝
+            Console.WriteLine($@"
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║              ELEVATOR CONTROL SYSTEM - PRODUCTION GRADE                       ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║  • 10 Floors  • 4 Elevators  • State Machine Architecture                     ║
+║  • Dispatch Strategy: {strategyName,-10}  • Speed: {speedMultiplier}x                              ║
+║  • Design Patterns: State, Strategy, Observer, DI                             ║
+║                                                                               ║
+║  Press Ctrl+C to stop the simulation                                          ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
 ");
             Console.ResetColor();
         }
     }
 
     /// <summary>
-    /// Logs a simulation stop message.
+    /// Displays simulation stop message.
     /// </summary>
     public void LogSimulationStop()
     {
-        Log(ConsoleColor.Red, "\n🛑 Simulation stopped.");
-    }
-
-    private void Log(ConsoleColor color, string message)
-    {
         lock (_lock)
         {
-            string timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
-            Console.ForegroundColor = ConsoleColor.DarkGray;
-            Console.Write($"[{timestamp}] ");
-            Console.ForegroundColor = color;
-            Console.WriteLine(message);
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("\n🛑 Simulation stopped.");
             Console.ResetColor();
         }
+    }
+
+    public void Dispose()
+    {
+        foreach (var sub in _subscriptions)
+        {
+            sub.Dispose();
+        }
+        _subscriptions.Clear();
     }
 }

@@ -1,38 +1,41 @@
+using ElevatorSystem.Core.Interfaces;
 using ElevatorSystem.Models;
 
 namespace ElevatorSystem.Services;
 
 /// <summary>
 /// Runs the elevator simulation, coordinating timing and events.
+/// Uses async/await for non-blocking elevator processing.
 /// </summary>
-public class Simulation
+public sealed class Simulation : IDisposable
 {
     private readonly Building _building;
     private readonly ElevatorController _controller;
-    private readonly Logger _logger;
+    private readonly ElevatorLogger _logger;
     private readonly CancellationTokenSource _cts;
     
-    private readonly int _movementDelayMs;
-    private readonly int _doorDelayMs;
     private readonly int _callIntervalMs;
     private readonly int _statusIntervalMs;
+    private readonly double _speedMultiplier;
 
     /// <summary>
     /// Creates a new simulation instance.
     /// </summary>
-    public Simulation(Building building, ElevatorController controller, Logger logger)
+    public Simulation(
+        Building building, 
+        ElevatorController controller, 
+        ElevatorLogger logger,
+        double speedMultiplier = Configuration.SpeedMultiplier)
     {
         _building = building;
         _controller = controller;
         _logger = logger;
         _cts = new CancellationTokenSource();
+        _speedMultiplier = speedMultiplier;
 
-        // Apply speed multiplier to all timings
-        double multiplier = Configuration.SpeedMultiplier;
-        _movementDelayMs = (int)(Configuration.MovementTimeMs / multiplier);
-        _doorDelayMs = (int)(Configuration.DoorTimeMs / multiplier);
-        _callIntervalMs = (int)(Configuration.CallGenerationIntervalMs / multiplier);
-        _statusIntervalMs = 2000; // Status update every 2 seconds (fixed)
+        // Apply speed multiplier to intervals
+        _callIntervalMs = (int)(Configuration.CallGenerationIntervalMs / speedMultiplier);
+        _statusIntervalMs = (int)(3000 / speedMultiplier); // Status every 3 seconds (adjusted)
     }
 
     /// <summary>
@@ -40,16 +43,29 @@ public class Simulation
     /// </summary>
     public async Task RunAsync()
     {
-        _logger.LogSimulationStart();
+        _logger.LogSimulationStart(_controller.DispatchStrategy.Name, _speedMultiplier);
 
-        // Start background tasks
-        var elevatorTask = RunElevatorsAsync(_cts.Token);
-        var callGeneratorTask = RunCallGeneratorAsync(_cts.Token);
-        var statusTask = RunStatusDisplayAsync(_cts.Token);
+        var token = _cts.Token;
+
+        // Start all elevator processors
+        var elevatorTasks = _controller.Elevators
+            .Select(e => RunElevatorAsync(e, token))
+            .ToList();
+
+        // Start call generator
+        var callGeneratorTask = RunCallGeneratorAsync(token);
+        
+        // Start status display
+        var statusTask = RunStatusDisplayAsync(token);
+
+        // Start cleanup task
+        var cleanupTask = RunCleanupAsync(token);
 
         try
         {
-            await Task.WhenAll(elevatorTask, callGeneratorTask, statusTask);
+            await Task.WhenAll(
+                elevatorTasks.Concat(new[] { callGeneratorTask, statusTask, cleanupTask })
+            );
         }
         catch (OperationCanceledException)
         {
@@ -68,53 +84,23 @@ public class Simulation
     }
 
     /// <summary>
-    /// Runs all elevator movement logic.
+    /// Runs a single elevator's processing loop.
     /// </summary>
-    private async Task RunElevatorsAsync(CancellationToken token)
+    private async Task RunElevatorAsync(IElevator elevator, CancellationToken token)
     {
         while (!token.IsCancellationRequested)
         {
-            foreach (var elevator in _controller.Elevators)
+            try
             {
-                await ProcessElevatorAsync(elevator, token);
+                await elevator.ProcessAsync(token);
+                
+                // Small delay between processing cycles to prevent tight loops
+                await Task.Delay(50, token);
             }
-
-            // Small delay between processing cycles
-            await Task.Delay(100, token);
-        }
-    }
-
-    /// <summary>
-    /// Processes a single elevator's state and movement.
-    /// </summary>
-    private async Task ProcessElevatorAsync(Elevator elevator, CancellationToken token)
-    {
-        switch (elevator.State)
-        {
-            case ElevatorState.Stopped when elevator.HasDestinations:
-                // Start moving
-                int fromFloor = elevator.CurrentFloor;
-                if (elevator.Move())
-                {
-                    _logger.LogElevatorMoving(elevator.Id, fromFloor, elevator.CurrentFloor);
-                    await Task.Delay(_movementDelayMs, token);
-                    
-                    if (elevator.CompleteMove())
-                    {
-                        // Arrived at a destination floor
-                        _logger.LogElevatorArrival(elevator.Id, elevator.CurrentFloor);
-                        elevator.OpenDoors();
-                        _logger.LogDoorsOpen(elevator.Id, elevator.CurrentFloor);
-                    }
-                }
+            catch (OperationCanceledException)
+            {
                 break;
-
-            case ElevatorState.DoorsOpen:
-                // Wait for passengers, then close doors
-                await Task.Delay(_doorDelayMs, token);
-                elevator.CloseDoors();
-                _logger.LogDoorsClosed(elevator.Id);
-                break;
+            }
         }
     }
 
@@ -128,11 +114,18 @@ public class Simulation
 
         while (!token.IsCancellationRequested)
         {
-            _building.GenerateRandomCall();
-            
-            // Randomize next call interval slightly (50% to 150% of base interval)
-            int nextInterval = _callIntervalMs / 2 + Random.Shared.Next(_callIntervalMs);
-            await Task.Delay(nextInterval, token);
+            try
+            {
+                _building.GenerateRandomCall();
+                
+                // Randomize next call interval (50% to 150% of base interval)
+                int nextInterval = _callIntervalMs / 2 + Random.Shared.Next(_callIntervalMs);
+                await Task.Delay(nextInterval, token);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
         }
     }
 
@@ -143,8 +136,41 @@ public class Simulation
     {
         while (!token.IsCancellationRequested)
         {
-            await Task.Delay(_statusIntervalMs, token);
-            _logger.LogElevatorPositions(_controller.Elevators);
+            try
+            {
+                await Task.Delay(_statusIntervalMs, token);
+                
+                var status = _controller.GetSystemStatus();
+                _logger.DisplayBuildingStatus(status);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
         }
+    }
+
+    /// <summary>
+    /// Periodically cleans up serviced calls.
+    /// </summary>
+    private async Task RunCleanupAsync(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(5000, token);
+                _controller.CleanupServicedCalls();
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        _cts.Dispose();
     }
 }
