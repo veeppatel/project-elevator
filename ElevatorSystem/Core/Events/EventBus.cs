@@ -1,32 +1,29 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using ElevatorSystem.Core.Interfaces;
 
 namespace ElevatorSystem.Core.Events;
 
 /// <summary>
 /// Simple in-memory event bus implementation.
+/// Uses lock-free immutable collections for high-performance publish operations.
 /// Thread-safe publish/subscribe for decoupled component communication.
 /// </summary>
 public sealed class EventBus : IEventBus
 {
-    private readonly ConcurrentDictionary<Type, List<Delegate>> _handlers = new();
-    private readonly object _lock = new();
+    // Using ImmutableArray for lock-free reads during Publish
+    // ConcurrentDictionary handles the outer thread-safety
+    private readonly ConcurrentDictionary<Type, ImmutableArray<Delegate>> _handlers = new();
 
     /// <inheritdoc />
     public void Publish<TEvent>(TEvent evt) where TEvent : IElevatorEvent
     {
         var eventType = typeof(TEvent);
         
+        // Lock-free read - ImmutableArray is inherently thread-safe
         if (_handlers.TryGetValue(eventType, out var handlers))
         {
-            // Create a snapshot to avoid issues if handlers modify the list
-            List<Delegate> snapshot;
-            lock (_lock)
-            {
-                snapshot = handlers.ToList();
-            }
-            
-            foreach (var handler in snapshot)
+            foreach (var handler in handlers)
             {
                 try
                 {
@@ -46,29 +43,24 @@ public sealed class EventBus : IEventBus
     {
         var eventType = typeof(TEvent);
         
-        lock (_lock)
-        {
-            if (!_handlers.TryGetValue(eventType, out var handlers))
-            {
-                handlers = new List<Delegate>();
-                _handlers[eventType] = handlers;
-            }
-            
-            handlers.Add(handler);
-        }
+        // Use AddOrUpdate with immutable add - atomic operation
+        _handlers.AddOrUpdate(
+            eventType,
+            _ => ImmutableArray.Create<Delegate>(handler),
+            (_, existing) => existing.Add(handler)
+        );
         
         return new Subscription(() => Unsubscribe(eventType, handler));
     }
 
     private void Unsubscribe(Type eventType, Delegate handler)
     {
-        lock (_lock)
-        {
-            if (_handlers.TryGetValue(eventType, out var handlers))
-            {
-                handlers.Remove(handler);
-            }
-        }
+        // Atomic remove using AddOrUpdate pattern
+        _handlers.AddOrUpdate(
+            eventType,
+            _ => ImmutableArray<Delegate>.Empty,
+            (_, existing) => existing.Remove(handler)
+        );
     }
 
     /// <summary>
@@ -77,7 +69,7 @@ public sealed class EventBus : IEventBus
     private sealed class Subscription : IDisposable
     {
         private readonly Action _unsubscribe;
-        private bool _disposed;
+        private int _disposed; // Using int for Interlocked
 
         public Subscription(Action unsubscribe)
         {
@@ -86,10 +78,10 @@ public sealed class EventBus : IEventBus
 
         public void Dispose()
         {
-            if (!_disposed)
+            // Lock-free dispose using Interlocked
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
                 _unsubscribe();
-                _disposed = true;
             }
         }
     }

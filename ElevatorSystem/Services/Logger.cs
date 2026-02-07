@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using ElevatorSystem.Core.Events;
 using ElevatorSystem.Core.Interfaces;
 using ElevatorSystem.Models;
@@ -13,8 +14,8 @@ public sealed class ElevatorLogger : IDisposable
     private readonly object _lock = new();
     private readonly List<IDisposable> _subscriptions = new();
     
-    // Track hall calls for visual display
-    private readonly HashSet<(int Floor, ElevatorDirection Direction)> _activeHallCalls = new();
+    // Track hall calls for visual display - using ConcurrentDictionary for lock-free access
+    private readonly ConcurrentDictionary<(int Floor, ElevatorDirection Direction), byte> _activeHallCalls = new();
 
     public ElevatorLogger(IEventBus eventBus)
     {
@@ -75,10 +76,8 @@ public sealed class ElevatorLogger : IDisposable
     private void OnHallCallReceived(HallCallReceivedEvent evt)
     {
         string arrow = evt.Direction == ElevatorDirection.Up ? "▲" : "▼";
-        lock (_lock)
-        {
-            _activeHallCalls.Add((evt.Floor, evt.Direction));
-        }
+        // Lock-free add using ConcurrentDictionary
+        _activeHallCalls.TryAdd((evt.Floor, evt.Direction), 0);
         LogEvent("SYS", "HALL_CALL", $"Floor {evt.Floor} {arrow} requested", ConsoleColor.Yellow);
     }
 
@@ -91,10 +90,9 @@ public sealed class ElevatorLogger : IDisposable
 
     private void OnHallCallServiced(HallCallServicedEvent evt)
     {
-        lock (_lock)
-        {
-            _activeHallCalls.RemoveWhere(c => c.Floor == evt.Floor);
-        }
+        // Lock-free remove - remove both up and down calls for this floor
+        _activeHallCalls.TryRemove((evt.Floor, ElevatorDirection.Up), out _);
+        _activeHallCalls.TryRemove((evt.Floor, ElevatorDirection.Down), out _);
         LogEvent($"E{evt.ElevatorId}", "PICKUP", $"Floor {evt.Floor} (waited {evt.WaitTime.TotalSeconds:F1}s)", ConsoleColor.Green);
     }
 
@@ -199,8 +197,9 @@ public sealed class ElevatorLogger : IDisposable
         Console.Write(" │ ");
         
         // Show hall calls at this floor
-        bool hasUpCall = _activeHallCalls.Contains((floor, ElevatorDirection.Up));
-        bool hasDownCall = _activeHallCalls.Contains((floor, ElevatorDirection.Down));
+        // Lock-free check using ContainsKey
+        bool hasUpCall = _activeHallCalls.ContainsKey((floor, ElevatorDirection.Up));
+        bool hasDownCall = _activeHallCalls.ContainsKey((floor, ElevatorDirection.Down));
         
         if (hasUpCall || hasDownCall)
         {

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using ElevatorSystem.Core.Events;
 using ElevatorSystem.Core.Interfaces;
 using ElevatorSystem.Core.States;
@@ -11,7 +12,8 @@ namespace ElevatorSystem.Models;
 public sealed class Elevator : IElevator, IElevatorContext
 {
     private readonly List<HallCall> _assignedHallCalls = new();
-    private readonly HashSet<int> _cabCallFloors = new();
+    // Using ConcurrentDictionary for lock-free cab call access (value is unused, using byte for minimal memory)
+    private readonly ConcurrentDictionary<int, byte> _cabCallFloors = new();
     private readonly object _lock = new();
     
     private IElevatorState _currentState;
@@ -37,10 +39,8 @@ public sealed class Elevator : IElevator, IElevatorContext
     {
         get
         {
-            lock (_lock)
-            {
-                return _cabCallFloors.ToHashSet();
-            }
+            // Lock-free snapshot - keys are thread-safe to enumerate
+            return _cabCallFloors.Keys.ToHashSet();
         }
     }
 
@@ -61,9 +61,13 @@ public sealed class Elevator : IElevator, IElevatorContext
     {
         get
         {
+            // Lock-free check for cab calls, still need lock for hall calls
+            if (!_cabCallFloors.IsEmpty)
+                return true;
+            
             lock (_lock)
             {
-                return _cabCallFloors.Count > 0 || _assignedHallCalls.Any(c => !c.IsServiced);
+                return _assignedHallCalls.Any(c => !c.IsServiced);
             }
         }
     }
@@ -123,17 +127,15 @@ public sealed class Elevator : IElevator, IElevatorContext
         if (destinationFloor < Configuration.MinFloor || destinationFloor > Configuration.MaxFloor)
             return;
 
-        lock (_lock)
+        // Lock-free add using ConcurrentDictionary
+        if (_cabCallFloors.TryAdd(destinationFloor, 0))
         {
-            if (_cabCallFloors.Add(destinationFloor))
+            EventBus.Publish(new CabCallAddedEvent
             {
-                EventBus.Publish(new CabCallAddedEvent
-                {
-                    ElevatorId = Id,
-                    Floor = CurrentFloor,
-                    DestinationFloor = destinationFloor
-                });
-            }
+                ElevatorId = Id,
+                Floor = CurrentFloor,
+                DestinationFloor = destinationFloor
+            });
         }
     }
 
@@ -198,20 +200,20 @@ public sealed class Elevator : IElevator, IElevatorContext
     /// <inheritdoc />
     public void ServiceCurrentFloor()
     {
+        // Service cab calls for this floor - lock-free remove
+        if (_cabCallFloors.TryRemove(_currentFloor, out _))
+        {
+            EventBus.Publish(new PassengerDeliveredEvent
+            {
+                ElevatorId = Id,
+                Floor = _currentFloor,
+                DestinationFloor = _currentFloor
+            });
+        }
+
+        // Service hall calls - needs lock for List<HallCall> access
         lock (_lock)
         {
-            // Service cab calls for this floor
-            if (_cabCallFloors.Remove(_currentFloor))
-            {
-                EventBus.Publish(new PassengerDeliveredEvent
-                {
-                    ElevatorId = Id,
-                    Floor = _currentFloor,
-                    DestinationFloor = _currentFloor
-                });
-            }
-
-            // Service hall calls for this floor in current direction
             var servicedCalls = _assignedHallCalls
                 .Where(c => c.Floor == _currentFloor && 
                            !c.IsServiced && 
@@ -239,13 +241,13 @@ public sealed class Elevator : IElevator, IElevatorContext
     /// <inheritdoc />
     public bool ShouldStopAtCurrentFloor()
     {
+        // Lock-free check for cab calls
+        if (_cabCallFloors.ContainsKey(_currentFloor))
+            return true;
+
+        // Still need lock for hall calls
         lock (_lock)
         {
-            // Stop for cab calls
-            if (_cabCallFloors.Contains(_currentFloor))
-                return true;
-
-            // Stop for hall calls in current direction
             return _assignedHallCalls.Any(c => 
                 c.Floor == _currentFloor && 
                 !c.IsServiced &&
@@ -260,8 +262,8 @@ public sealed class Elevator : IElevator, IElevatorContext
         {
             var stops = new HashSet<int>();
 
-            // Add cab calls in direction
-            foreach (var floor in _cabCallFloors)
+            // Lock-free iteration of cab calls - Keys property is thread-safe
+            foreach (var floor in _cabCallFloors.Keys)
             {
                 if (direction == ElevatorDirection.Up && floor > _currentFloor)
                     stops.Add(floor);
